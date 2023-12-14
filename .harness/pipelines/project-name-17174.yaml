@@ -1,0 +1,69 @@
+pipeline:
+  identifier: build-project-name
+  name: project-name
+  orgIdentifier: default
+  projectIdentifier: project-name
+  properties:
+    ci:
+      codebase:
+        build: <+input>
+        connectorRef: account.Github
+        repoName: harness-gitsync-test-repository
+  stages:
+    - stage:
+        name: dev-deploy
+        identifier: deploy
+        delegateSelectors:
+          - harness-delegate-ng
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            paths: []
+          sharedPaths:
+            - services/<+pipeline.variables.PROJECT>/
+            - /var/run
+            - /var/lib/docker
+          infrastructure:
+            useFromStage: ci
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: liquibase_update
+                  identifier: liquibase_update
+                  spec:
+                    connectorRef: account.harnessImage
+                    image: "liquibase/liquibase:4.15 "
+                    shell: Sh
+                    command: |
+                      cd services/<+pipeline.variables.PROJECT>/src/main/resources
+
+                      liquibase --changelog-file=migrations.xml --url=<+pipeline.variables.DBURL>/<+pipeline.variables.DBNAME> --username=<+pipeline.variables.DBUSERNAME> --password=<+pipeline.variables.DBPASSWORD> --driver=org.postgresql.Driver update
+                  when:
+                    stageStatus: Success
+                    condition: <+trigger.prNumber> == null
+              - step:
+                  type: Run
+                  name: update_image_tag
+                  identifier: UpdatesArtifacts
+                  spec:
+                    connectorRef: ecrconnector
+                    image: 474532148129.dkr.ecr.ap-south-1.amazonaws.com/docker-pipeline-tool:v0.5.0
+                    shell: Sh
+                    command: |-
+                      git clone https://<+pipeline.variables.USERNAME>:<+pipeline.variables.GITHUBPAT>@github.com/xebia-devops-practice/apps-infra-manifests.git
+                      cd apps-infra-manifests
+                      pathEnv=".deployment.image.tag" valueEnv=beta-v<+execution.steps.Build.output.outputVariables.DOCKER_TAG>-<+execution.steps.Build.output.outputVariables.DIGEST> yq 'eval(strenv(pathEnv)) = strenv(valueEnv)' -i envs/dev/03-service-configs/<+pipeline.variables.PROJECT>/values.yaml
+                      git config --global user.email "harness-service-ci@xebia.com"
+                      git config --global user.name "harness-service-ci"
+                      git add .
+                      git commit -m "image-tag-updated"
+                      git push -u origin main
+                    envVariables:
+                      AWS_DEFAULT_REGION: <+pipeline.variables.AWS_REGION>
+                  when:
+                    stageStatus: Success
+                    condition: <+trigger.prNumber> == null
+                  description: "Updating the image tag in the values.yaml "
